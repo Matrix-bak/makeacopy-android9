@@ -270,11 +270,12 @@ info "步骤 8/8: 验证 ..."
   || die "签名在 API 28 平台级别校验失败"
 info "签名 API28 平台校验通过 ✓"
 
-# 8b. 清单：包名 / minSdk=28 / 仅 arm64-v8a（aapt2 与 aapt 输出格式一致）
-BADGING="$("$BT/aapt2" dump badging "$OUT_APK" | grep -E '^package|sdkVersion|native-code' || true)"
+# 8b. 清单：包名 / minSdk=28 / 仅 arm64-v8a
+#     注意：build-tools 36 的 aapt2 输出 minSdkVersion:'28'，旧版 aapt/aapt2 为 sdkVersion:'28'，两者都要认
+BADGING="$("$BT/aapt2" dump badging "$OUT_APK" | grep -E '^package|[Ss]dkVersion|native-code' || true)"
 [ -n "$BADGING" ] || die "aapt2 无法读取 APK 清单"
 echo "$BADGING"
-echo "$BADGING" | grep -q "sdkVersion:'28'" || die "minSdk 不是 28"
+echo "$BADGING" | grep -qE "(minSdkVersion|sdkVersion):'28'" || die "minSdk 不是 28"
 echo "$BADGING" | grep -q "arm64-v8a" || die "ABI 错误"
 if echo "$BADGING" | grep -qE 'native-code:.*(x86|armeabi)'; then
   die "混入了非 arm64-v8a 的 ABI"
