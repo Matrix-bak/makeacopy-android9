@@ -2,19 +2,23 @@ name: Adapt MakeACopy for Android 9
 
 # 触发方式：
 # 1. 每 6 小时自动检查官方是否有新版（第一时间跟进）
-# 2. 手动触发：Actions → 本工作流 → Run workflow，可指定强制适配某个 tag
+# 2. 手动触发：Actions → 本工作流 → Run workflow，可指定强制适配某个正式 tag
+#
+# 安全约定：所有外部值（手动输入、上游 API 响应）一律通过 env 传入再以 "$VAR" 引用，
+# 禁止直接 ${{ }} 插值进 shell，杜绝命令注入。
 on:
   schedule:
     - cron: '0 */6 * * *'
   workflow_dispatch:
     inputs:
       force_tag:
-        description: '强制适配指定官方 tag（例如 v4.7.0；留空则自动检测最新版）'
+        description: '强制适配指定官方正式 tag（例如 v4.6.1；留空则自动检测最新版）'
         required: false
         type: string
 
 permissions:
-  contents: write
+  contents: write   # 推送标记、创建 Release
+  issues: write     # 失败时自动开 issue 告警
 
 concurrency:
   group: adapt-android9
@@ -29,42 +33,60 @@ jobs:
 
       - name: 探测官方最新版本
         id: detect
+        env:
+          FORCE_TAG: ${{ inputs.force_tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [ -n "${{ inputs.force_tag }}" ]; then
-            TAG="${{ inputs.force_tag }}"
-            echo "手动指定: ${TAG}"
+          set -euo pipefail
+          if [ -n "$FORCE_TAG" ]; then
+            TAG="$FORCE_TAG"
+            # 手动指定时核验是否为预发布版（rc/beta/alpha 一律拒绝）
+            PRERELEASE="$(gh api "repos/egdels/makeacopy/releases/tags/$TAG" --jq .prerelease 2>/dev/null || echo unknown)"
+            if [ "$PRERELEASE" = "true" ]; then
+              echo "::error:: $TAG 是预发布版本，正式版才跟进"
+              exit 1
+            fi
+            echo "手动指定正式 tag: $TAG（prerelease=$PRERELEASE）"
           else
-            TAG="$(curl -s https://api.github.com/repos/egdels/makeacopy/releases/latest | jq -r .tag_name)"
+            # /releases/latest 只返回正式版（天然过滤 prerelease）；
+            # gh api 走认证配额 5000/h，避免匿名 60/h 在共享 runner IP 上限流
+            TAG="$(gh api repos/egdels/makeacopy/releases/latest --jq .tag_name)"
+            echo "官方最新正式 tag: $TAG"
           fi
           case "$TAG" in
             v*) ;;
-            *) echo "无法获取有效 tag (${TAG})"; exit 0 ;;
+            *) echo "::error::无法获取有效 tag（得到：$TAG）"; exit 1 ;;
           esac
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: 与已适配版本对比
         id: compare
+        env:
+          TAG: ${{ steps.detect.outputs.tag }}
+          FORCE_TAG: ${{ inputs.force_tag }}
         run: |
+          set -euo pipefail
           LAST="$(cat LAST_ADAPTED_VERSION 2>/dev/null || echo none)"
-          echo "已适配: ${LAST} | 官方最新: ${{ steps.detect.outputs.tag }}"
-          # 逐段数字比较版本号（如 v4.6.2 > v4.6.1，v4.10.0 > v4.9.9）
+          echo "已适配: ${LAST} | 官方最新: ${TAG}"
+          # 逐段数字比较（v4.10.0 > v4.9.9）；先清洗非数字/点号，防止预发布后缀干扰
           ver_cmp() {
-            a="${1#v}"; b="${2#v}"
+            clean() { echo "$1" | tr -dc '0-9.'; }
+            a="$(clean "${1#v}")"; b="$(clean "${2#v}")"
             IFS='.' read -ra A <<< "$a"; IFS='.' read -ra B <<< "$b"
             for i in 0 1 2 3; do
-              x=$(( ${A[$i]:-0} + 0 )); y=$(( ${B[$i]:-0} + 0 ))
+              x=$(( ${A[$i]:-0} )); y=$(( ${B[$i]:-0} ))
               [ "$x" -gt "$y" ] && { echo 1; return; }
               [ "$x" -lt "$y" ] && { echo -1; return; }
             done
             echo 0
           }
-          if [ -n "${{ inputs.force_tag }}" ]; then
+          if [ -n "$FORCE_TAG" ]; then
             echo "手动强制，继续执行"
             echo "run=yes" >> "$GITHUB_OUTPUT"
           elif [ "$LAST" = "none" ]; then
             echo "无历史记录，开始适配"
             echo "run=yes" >> "$GITHUB_OUTPUT"
-          elif [ "$(ver_cmp "${{ steps.detect.outputs.tag }}" "$LAST")" -gt 0 ]; then
+          elif [ "$(ver_cmp "$TAG" "$LAST")" -gt 0 ]; then
             echo "检测到新版本，开始适配"
             echo "run=yes" >> "$GITHUB_OUTPUT"
           else
@@ -93,13 +115,14 @@ jobs:
 
       - name: 运行适配脚本
         if: steps.compare.outputs.run == 'yes'
-        run: ./adapt.sh ${{ steps.detect.outputs.tag }} --ci
         env:
+          TAG: ${{ steps.detect.outputs.tag }}
           KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEYSTORE_ALIAS: ${{ secrets.KEYSTORE_ALIAS }}
+        run: ./adapt.sh "$TAG" --ci
 
-      - name: 发布适配版 APK
+      - name: 发布适配版 APK（幂等：重跑覆盖同名资产）
         if: steps.compare.outputs.run == 'yes'
         uses: softprops/action-gh-release@v2
         with:
@@ -112,22 +135,74 @@ jobs:
 
             ### 适配改动
             - `minSdk` 29 → 28（支持 Android 9）
-            - 修复 8 处 API 29+ 无守卫调用（手势排除区 ×3、放大镜 ×1）
-            - ONNX Runtime 替换为微软官方预编译版（官方精简版仅支持 Android 10+）
+            - 4 个补丁点为 8 处 API 29+ 调用加版本守卫（手势排除区 ×3、放大镜块 ×5）
+            - ONNX Runtime 替换为微软官方预编译完整版（官方 minimal_build 仅支持 Android 10+；代价是体积约 +20MB，换取全算子覆盖）
             - OpenCV 库与官方版一致（取自官方发布 APK）
+            - `versionName` 加 `-android9` 后缀以便与官方版区分
             - 自签名（非官方签名，安装前需卸载官方版）
 
-            ### 安装
+            ### 安装与校验
             1. 卸载已安装的官方版（签名不同无法覆盖）
-            2. 下载安装本 APK（arm64-v8a）
-          files: output/MakeACopy-v*.apk
+            2. 下载安装 APK（**仅支持 arm64-v8a**，32 位/x86 设备不可用）
+            3. 可用随附 `.sha256` 校验下载完整性
+          files: |
+            output/*.apk
+            output/*.sha256
+            output/NOTICE
+          fail_on_unmatched_files: true
+          # v2 默认覆盖同名资产，重跑天然幂等
 
-      - name: 更新已适配版本标记
+      - name: 更新已适配版本标记（只进不退）
         if: steps.compare.outputs.run == 'yes'
+        env:
+          TAG: ${{ steps.detect.outputs.tag }}
         run: |
-          echo "${{ steps.detect.outputs.tag }}" > LAST_ADAPTED_VERSION
+          set -euo pipefail
+          LAST="$(cat LAST_ADAPTED_VERSION 2>/dev/null || echo none)"
+          clean() { echo "$1" | tr -dc '0-9.'; }
+          ver_cmp() {
+            a="$(clean "${1#v}")"; b="$(clean "${2#v}")"
+            IFS='.' read -ra A <<< "$a"; IFS='.' read -ra B <<< "$b"
+            for i in 0 1 2 3; do
+              x=$(( ${A[$i]:-0} )); y=$(( ${B[$i]:-0} ))
+              [ "$x" -gt "$y" ] && { echo 1; return; }
+              [ "$x" -lt "$y" ] && { echo -1; return; }
+            done
+            echo 0
+          }
           git config user.name "adapt-bot"
           git config user.email "actions@github.com"
-          git add LAST_ADAPTED_VERSION
-          git commit -m "chore: mark adapted ${{ steps.detect.outputs.tag }}" || true
-          git push
+          if [ "$LAST" = "none" ] || [ "$(ver_cmp "$TAG" "$LAST")" -gt 0 ]; then
+            echo "$TAG" > LAST_ADAPTED_VERSION
+            git add LAST_ADAPTED_VERSION
+            git commit -m "chore: mark adapted $TAG"
+            git push
+            echo "标记已推进: $LAST → $TAG"
+          else
+            echo "$TAG 不新于标记 $LAST，标记保持不变（force 老版本不回退基线）"
+          fi
+
+      - name: 上传构建日志（排错用）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: ignore
+
+      - name: 失败时自动开 issue 告警
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.detect.outputs.tag }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh issue create \
+            --title "❌ Android 9 适配失败：${TAG:-版本探测阶段}" \
+            --body "自动适配流水线失败，通常意味着上游重构导致补丁未命中或 NewApi 闸门拦截，需要人工介入。
+
+          - 运行记录：${RUN_URL}
+          - 目标 tag：${TAG:-未确定}
+          - 时间：$(date -u '+%Y-%m-%d %H:%M UTC')
+
+          请查看运行日志（含 build-log artifact），更新 adapt.sh 后重跑。" || echo "issue 创建失败，不阻断"

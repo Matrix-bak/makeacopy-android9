@@ -5,6 +5,9 @@ app-aligned.apk
 keystore.jks
 official/
 *.apk
+build.log
+.check-*.so
+*.sha1
 
 # IDE
 .idea/

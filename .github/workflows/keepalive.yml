@@ -1,0 +1,39 @@
+name: Keepalive
+
+# 作用：GitHub 会在仓库连续 60 天无活动后自动禁用所有 scheduled workflow。
+# 本工作流每周提交一次 LAST_CHECK 时间戳（commit 属于仓库活动），
+# 让 60 天计数器永不累积，保证「自动适配」工作流的定时轮询长期存活。
+#
+# 注意：workflow 自身运行不算仓库活动，只有 commit/push 才算。
+# 首次部署后必须手动 Run workflow 一次，让循环启动（若已被禁用，
+# keepalive 自己也无法运行，只能手动恢复）。
+on:
+  schedule:
+    # 每周一 10:23 UTC（错峰，避免整点拥堵）
+    - cron: '23 10 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: keepalive
+  cancel-in-progress: false
+
+jobs:
+  touch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 更新活动时间戳并提交
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TS="$(date -u '+%Y-%m-%d %H:%M UTC')"
+          echo "上次保活检查: ${TS}" > LAST_CHECK
+          git config user.name "adapt-bot"
+          git config user.email "actions@github.com"
+          git add LAST_CHECK
+          git commit -m "chore(keepalive): ${TS}" || { echo "无变化，跳过"; exit 0; }
+          git push
