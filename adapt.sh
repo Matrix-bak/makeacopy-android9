@@ -148,7 +148,7 @@ PYEOF
 # ---------- 4. 替换 ONNX Runtime + OpenCV 库 ----------
 info "步骤 4/8: 替换 ORT/OpenCV 原生库 ..."
 # 4a. 探测官方锁定的 ORT 版本（用 POSIX ERE，兼容 macOS BSD grep）
-ORT_VER="$(grep -oE 'onnxruntime-[0-9]+\.[0-9]+\.[0-9]+\.jar' scripts/build_onnxruntime_android.sh | head -1 | sed 's/onnxruntime-//;s/\.jar//')"
+ORT_VER="$(grep -oE 'onnxruntime-[0-9]+\.[0-9]+\.[0-9]+\.jar' scripts/build_onnxruntime_android.sh | head -1 | sed 's/onnxruntime-//;s/\.jar//' || true)"
 [ -n "$ORT_VER" ] || die "无法探测 ORT 版本"
 info "官方锁定 ORT: ${ORT_VER}"
 
@@ -222,7 +222,12 @@ else
     die "发现未加版本守卫的高版本 API 调用（NewApi），禁止在 Android 9 上发布，请补守卫"
   fi
   # 其它类型 lint 错误不阻断（上游可能有自己的历史 lint 债），仅计数提示
-  OTHER="$(grep -h -c 'Error:' "${REPORTS[@]}" 2>/dev/null | awk '{s+=$1} END{print s+0}')"
+  # 注意：grep -c 无匹配时退出码为 1，在 set -e/pipefail 下会误杀脚本，必须逐文件 || true
+  OTHER=0
+  for r in "${REPORTS[@]}"; do
+    c="$(grep -c 'Error:' "$r" 2>/dev/null || true)"
+    OTHER=$(( OTHER + ${c:-0} ))
+  done
   if [ "$OTHER" = "0" ]; then
     info "NewApi 闸门通过，无其它 lint 错误 ✓"
   else
@@ -266,7 +271,8 @@ info "步骤 8/8: 验证 ..."
 info "签名 API28 平台校验通过 ✓"
 
 # 8b. 清单：包名 / minSdk=28 / 仅 arm64-v8a（aapt2 与 aapt 输出格式一致）
-BADGING="$("$BT/aapt2" dump badging "$OUT_APK" | grep -E '^package|sdkVersion|native-code')"
+BADGING="$("$BT/aapt2" dump badging "$OUT_APK" | grep -E '^package|sdkVersion|native-code' || true)"
+[ -n "$BADGING" ] || die "aapt2 无法读取 APK 清单"
 echo "$BADGING"
 echo "$BADGING" | grep -q "sdkVersion:'28'" || die "minSdk 不是 28"
 echo "$BADGING" | grep -q "arm64-v8a" || die "ABI 错误"
