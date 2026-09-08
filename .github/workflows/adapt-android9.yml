@@ -47,15 +47,29 @@ jobs:
         run: |
           LAST="$(cat LAST_ADAPTED_VERSION 2>/dev/null || echo none)"
           echo "已适配: ${LAST} | 官方最新: ${{ steps.detect.outputs.tag }}"
+          # 逐段数字比较版本号（如 v4.6.2 > v4.6.1，v4.10.0 > v4.9.9）
+          ver_cmp() {
+            a="${1#v}"; b="${2#v}"
+            IFS='.' read -ra A <<< "$a"; IFS='.' read -ra B <<< "$b"
+            for i in 0 1 2 3; do
+              x=$(( ${A[$i]:-0} + 0 )); y=$(( ${B[$i]:-0} + 0 ))
+              [ "$x" -gt "$y" ] && { echo 1; return; }
+              [ "$x" -lt "$y" ] && { echo -1; return; }
+            done
+            echo 0
+          }
           if [ -n "${{ inputs.force_tag }}" ]; then
             echo "手动强制，继续执行"
             echo "run=yes" >> "$GITHUB_OUTPUT"
-          elif [ "$LAST" = "${{ steps.detect.outputs.tag }}" ]; then
-            echo "无新版本，跳过"
-            echo "run=no" >> "$GITHUB_OUTPUT"
-          else
+          elif [ "$LAST" = "none" ]; then
+            echo "无历史记录，开始适配"
+            echo "run=yes" >> "$GITHUB_OUTPUT"
+          elif [ "$(ver_cmp "${{ steps.detect.outputs.tag }}" "$LAST")" -gt 0 ]; then
             echo "检测到新版本，开始适配"
             echo "run=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "无新版本，跳过"
+            echo "run=no" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Checkout 官方源码
