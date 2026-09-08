@@ -112,12 +112,14 @@ src = sub_once(
 
 if fixes == 0 and orig == src:
     if 'VERSION_CODES.Q' in src:
-        info("守卫已存在，跳过")
+        print('[INFO] 守卫已存在，跳过')
     else:
-        die("补丁未能匹配，官方可能重构了该文件，请人工适配")
+        import sys as _sys
+        print('[FAIL] 补丁未能匹配，官方可能重构了该文件，请人工适配', file=_sys.stderr)
+        _sys.exit(1)
 elif orig != src:
     open(path, 'w', encoding='utf-8').write(src)
-    info(f"补丁应用完成（{fixes} 处）")
+    print(f'[INFO] 补丁应用完成（{fixes} 处）')
 PYEOF
 
 # ---------- 4. 替换 ONNX Runtime + OpenCV 库 ----------
