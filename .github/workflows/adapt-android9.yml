@@ -1,0 +1,119 @@
+name: Adapt MakeACopy for Android 9
+
+# 触发方式：
+# 1. 每 6 小时自动检查官方是否有新版（第一时间跟进）
+# 2. 手动触发：Actions → 本工作流 → Run workflow，可指定强制适配某个 tag
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      force_tag:
+        description: '强制适配指定官方 tag（例如 v4.7.0；留空则自动检测最新版）'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: adapt-android9
+  cancel-in-progress: false
+
+jobs:
+  adapt:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout 本仓库
+        uses: actions/checkout@v4
+
+      - name: 探测官方最新版本
+        id: detect
+        run: |
+          if [ -n "${{ inputs.force_tag }}" ]; then
+            TAG="${{ inputs.force_tag }}"
+            echo "手动指定: ${TAG}"
+          else
+            TAG="$(curl -s https://api.github.com/repos/egdels/makeacopy/releases/latest | jq -r .tag_name)"
+          fi
+          case "$TAG" in
+            v*) ;;
+            *) echo "无法获取有效 tag (${TAG})"; exit 0 ;;
+          esac
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: 与已适配版本对比
+        id: compare
+        run: |
+          LAST="$(cat LAST_ADAPTED_VERSION 2>/dev/null || echo none)"
+          echo "已适配: ${LAST} | 官方最新: ${{ steps.detect.outputs.tag }}"
+          if [ -n "${{ inputs.force_tag }}" ]; then
+            echo "手动强制，继续执行"
+            echo "run=yes" >> "$GITHUB_OUTPUT"
+          elif [ "$LAST" = "${{ steps.detect.outputs.tag }}" ]; then
+            echo "无新版本，跳过"
+            echo "run=no" >> "$GITHUB_OUTPUT"
+          else
+            echo "检测到新版本，开始适配"
+            echo "run=yes" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout 官方源码
+        if: steps.compare.outputs.run == 'yes'
+        uses: actions/checkout@v4
+        with:
+          repository: egdels/makeacopy
+          ref: ${{ steps.detect.outputs.tag }}
+          path: official
+
+      - name: 安装 JDK 21
+        if: steps.compare.outputs.run == 'yes'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: 安装 Android SDK
+        if: steps.compare.outputs.run == 'yes'
+        uses: android-actions/setup-android@v3
+
+      - name: 运行适配脚本
+        if: steps.compare.outputs.run == 'yes'
+        run: ./adapt.sh ${{ steps.detect.outputs.tag }} --ci
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEYSTORE_ALIAS: ${{ secrets.KEYSTORE_ALIAS }}
+
+      - name: 发布适配版 APK
+        if: steps.compare.outputs.run == 'yes'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.detect.outputs.tag }}-android9
+          name: MakeACopy ${{ steps.detect.outputs.tag }}（Android 9 适配版）
+          body: |
+            ## MakeACopy ${{ steps.detect.outputs.tag }} · Android 9 适配版
+
+            自动适配自官方 [egdels/makeacopy](https://github.com/egdels/makeacopy) ${{ steps.detect.outputs.tag }}。
+
+            ### 适配改动
+            - `minSdk` 29 → 28（支持 Android 9）
+            - 修复 8 处 API 29+ 无守卫调用（手势排除区 ×3、放大镜 ×1）
+            - ONNX Runtime 替换为微软官方预编译版（官方精简版仅支持 Android 10+）
+            - OpenCV 库与官方版一致（取自官方发布 APK）
+            - 自签名（非官方签名，安装前需卸载官方版）
+
+            ### 安装
+            1. 卸载已安装的官方版（签名不同无法覆盖）
+            2. 下载安装本 APK（arm64-v8a）
+          files: output/MakeACopy-v*.apk
+
+      - name: 更新已适配版本标记
+        if: steps.compare.outputs.run == 'yes'
+        run: |
+          echo "${{ steps.detect.outputs.tag }}" > LAST_ADAPTED_VERSION
+          git config user.name "adapt-bot"
+          git config user.email "actions@github.com"
+          git add LAST_ADAPTED_VERSION
+          git commit -m "chore: mark adapted ${{ steps.detect.outputs.tag }}" || true
+          git push

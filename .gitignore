@@ -1,0 +1,12 @@
+# 构建与缓存产物
+output/
+cache/
+app-aligned.apk
+keystore.jks
+official/
+*.apk
+
+# IDE
+.idea/
+*.iml
+.vscode/
