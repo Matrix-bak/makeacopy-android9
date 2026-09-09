@@ -1,14 +1,15 @@
 name: Adapt MakeACopy for Android 9
 
 # 触发方式：
-# 1. 每 6 小时自动检查官方是否有新版（第一时间跟进）
+# 1. 每天自动检查官方是否有新版（官方发版间隔约 1-2 个月，日频已足够即时；
+#    空跑仅执行 1 秒的版本探测后静默退出，公共仓库 Actions 免费额度不受限）
 # 2. 手动触发：Actions → 本工作流 → Run workflow，可指定强制适配某个正式 tag
 #
 # 安全约定：所有外部值（手动输入、上游 API 响应）一律通过 env 传入再以 "$VAR" 引用，
 # 禁止直接 ${{ }} 插值进 shell，杜绝命令注入。
 on:
   schedule:
-    - cron: '0 */6 * * *'
+    - cron: '0 10 * * *'
   workflow_dispatch:
     inputs:
       force_tag:
