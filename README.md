@@ -27,11 +27,12 @@
 
 ## 自动跟进机制
 
-- **触发器**：每 6 小时轮询官方 GitHub Releases（经 `gh api` 认证调用，避免匿名限流；`/releases/latest` 天然只返回正式版，rc/beta/alpha 预发布版一律跳过）
+- **触发器**：每周轮询一次（周一 10:00 UTC，约等于科威特/沙特 13:00）官方 GitHub Releases（经 `gh api` 认证调用，避免匿名限流；`/releases/latest` 天然只返回正式版，rc/beta/alpha 预发布版一律跳过）。官方发版后最迟下周一自动完成适配；无新版时静默跳过，不产生任何通知或 Release
 - **判断**：官方最新 tag **逐段数字比较**且**新于** `LAST_ADAPTED_VERSION` 才适配；标记只进不退
 - **产物**：自动创建/更新 Release，tag 形如 `v4.7.0-android9`，附件为 APK + sha256 + NOTICE；重跑幂等（覆盖同名资产）
 - **手动触发**：Actions → `Adapt MakeACopy for Android 9` → Run workflow，可填 `force_tag` 强制适配某个正式 tag
 - **失败告警**：任何一步失败（最常见是上游重构导致补丁未命中）会自动开一个 issue 提醒人工介入，并上传完整构建日志
+- **更新通知**：仓库页右上角 **Watch → Custom → 勾选 Releases → Apply**，官方发新版被自动适配发布 Release 时，GitHub 会发邮件 / App 推送通知你；无新版时静默不打扰
 - **防 60 天自动禁用**：GitHub 会在仓库连续 60 天无活动后禁用所有定时工作流；`Keepalive` 工作流每周提交一次时间戳，保证轮询永不被停。**首次部署后需手动 Run 一次 Keepalive 启动循环**
 
 ## 首次配置（只需一次）
@@ -72,7 +73,7 @@ keytool -genkeypair -v -keystore makeacopy-android9.jks \
 ## 安装说明
 
 - 适配版使用自签名（非官方签名）——**安装前需先卸载官方版**；同一适配密钥签名的各版本之间可互相覆盖升级
-- 安装后不会收到官方渠道的自动更新，以本仓库 Release 为准
+- 安装后不会收到官方渠道的自动更新，以本仓库 Release 为准（仓库页 Watch → Custom → Releases 可接收每次适配版发布通知）
 - 下载后可用随附 `.sha256` 校验：`sha256sum -c MakeACopy-*.apk.sha256`
 - 与官方版的功能差异仅限上述适配项，扫描/OCR/PDF 导出等功能完整保留
 - **建议每次大版本升级后在 Android 9 真机完整冒烟一次**（扫描 → OCR → 导出 PDF），这是脚本静态验证替代不了的
