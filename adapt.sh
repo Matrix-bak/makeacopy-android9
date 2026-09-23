@@ -242,7 +242,10 @@ BT=""
 if command -v zipalign >/dev/null 2>&1; then BT="$(dirname "$(command -v zipalign)")"; fi
 if [ -z "$BT" ] || [ ! -x "$BT/zipalign" ]; then
   SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
-  BT="$(find "$SDK" -mindepth 2 -maxdepth 2 -type d -path '*/build-tools/*' 2>/dev/null | sort -V | tail -1)"
+  if [ -z "$SDK" ]; then
+    die "未设置 ANDROID_HOME/ANDROID_SDK_ROOT，且 PATH 中无 zipalign，无法定位 build-tools"
+  fi
+  BT="$(find "$SDK" -mindepth 2 -maxdepth 2 -type d -path '*/build-tools/*' 2>/dev/null | sort -V | tail -1 || true)"
 fi
 if [ -z "$BT" ] || [ ! -x "$BT/zipalign" ] || [ ! -x "$BT/apksigner" ]; then
   die "找不到 build-tools（zipalign/apksigner）"
